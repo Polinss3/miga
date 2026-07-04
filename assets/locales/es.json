@@ -1,0 +1,6 @@
+{
+  "NSCameraUsageDescription": "Miga usa la cámara para escanear códigos de barras, tickets y fotos de tus comidas. Las imágenes se analizan y después se eliminan.",
+  "NSPhotoLibraryUsageDescription": "Miga accede a tu galería para que puedas adjuntar una foto de una comida, un ticket o una etiqueta nutricional y analizarla.",
+  "NSHealthShareUsageDescription": "Miga lee peso, pasos y entrenamientos de Apple Salud para personalizar tus objetivos nutricionales. Tus datos de salud nunca se usan con fines publicitarios.",
+  "NSHealthUpdateUsageDescription": "Miga puede escribir en Apple Salud la nutrición y el agua que registres, para que todos tus datos de salud estén en un mismo lugar."
+}

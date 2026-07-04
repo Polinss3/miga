@@ -41,3 +41,17 @@ example
 # generated native folders
 /ios
 /android
+
+# local env files
+.env
+.env.*
+!.env.example
+
+# supabase local
+supabase/.temp
+supabase/.branches
+
+# local EAS build artifacts
+*.ipa
+*.apk
+*.aab
