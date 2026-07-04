@@ -1,56 +1,140 @@
-# Welcome to your Expo app 👋
+# Miga 🥗
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Nutrition companion app: daily food tracking, barcode/receipt/meal-photo scanning,
+pantry inventory, personal recipes, AI meal planning and a safety-bounded AI advisor.
+Spanish + English, iOS-first (Liquid Glass on iOS 26+), Android compatible.
 
-## Get started
+**Stack**: Expo SDK 54 · React Native · TypeScript strict · Expo Router ·
+Supabase (Auth, Postgres + RLS, RPC, Edge Functions) · TanStack Query · Zustand ·
+RevenueCat · provider-agnostic AI (OpenAI / Anthropic / Gemini).
 
-1. Install dependencies
+Docs: [architecture](docs/architecture.md) · [privacy/GDPR](docs/privacy.md) ·
+[AI safety](docs/ai-safety.md) · [store compliance](docs/app-store-compliance.md) ·
+[health integrations](docs/health-integrations.md)
 
-   ```bash
-   npm install
-   ```
+---
 
-2. Start the app
+## 1. Prerequisites
+- Node 20+, npm
+- [Supabase CLI](https://supabase.com/docs/guides/cli) (`brew install supabase/tap/supabase`)
+- Xcode / Android Studio for simulators, or the Expo Go app
+- Accounts: Supabase, an AI provider (OpenAI/Anthropic/Google), RevenueCat (for premium), Expo/EAS (for builds)
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## 2. Backend setup (Supabase)
 
 ```bash
-npm run reset-project
+# Create a project at supabase.com, then:
+supabase link --project-ref YOUR_PROJECT_REF
+supabase db push          # applies supabase/migrations (schema, RLS, RPCs)
+psql "$DATABASE_URL" -f supabase/seed.sql   # optional: base food catalog
+
+# AI + webhook secrets (server-side only):
+supabase secrets set AI_PROVIDER=openai AI_MODEL=gpt-5-nano OPENAI_API_KEY=sk-...
+# or: AI_PROVIDER=anthropic AI_MODEL=claude-haiku-4-5 ANTHROPIC_API_KEY=...
+# or: AI_PROVIDER=gemini    AI_MODEL=gemini-2.5-flash  GOOGLE_AI_API_KEY=...
+supabase secrets set REVENUECAT_WEBHOOK_AUTH=$(openssl rand -hex 24)
+
+# Deploy Edge Functions:
+supabase functions deploy analyze-food-image analyze-receipt-image \
+  analyze-nutrition-label create-recipe improve-recipe generate-meal-plan \
+  ai-chat normalize-barcode-product delete-account
+supabase functions deploy revenuecat-webhook --no-verify-jwt
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Dashboard configuration:
+1. **Auth → Providers**: enable Email (magic link), Apple, Google. Turn ON
+   *"Link identities automatically"* so the same email maps to one account.
+2. **Auth → URL Configuration**:
+   - Site URL: `miga://auth/callback`
+   - Redirect URLs: `miga://auth/callback`, `miga://**`, `exp://**`
+   - For email templates, make sure magic-link buttons use `{{ .RedirectTo }}`,
+     not only `{{ .SiteURL }}`.
+3. **RevenueCat dashboard**: create the `premium` entitlement with monthly/yearly
+   products; add a webhook to
+   `https://YOUR_REF.supabase.co/functions/v1/revenuecat-webhook` with the
+   `REVENUECAT_WEBHOOK_AUTH` value as the Authorization header.
 
-### Other setup steps
+## 3. App setup
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+```bash
+npm install
+cp .env.example .env      # fill EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (+ RevenueCat keys)
+npm start                 # Expo dev server → press i / a, or scan with Expo Go
+```
 
-## Learn more
+For EAS/TestFlight builds, also create the public client variables in the EAS
+environment used by the build:
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+eas env:create production --name EXPO_PUBLIC_SUPABASE_URL --visibility plaintext
+eas env:create production --name EXPO_PUBLIC_SUPABASE_ANON_KEY --visibility plaintext
+eas env:create production --name EXPO_PUBLIC_REVENUECAT_IOS_KEY --visibility plaintext
+eas env:create production --name EXPO_PUBLIC_REVENUECAT_ANDROID_KEY --visibility plaintext
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+### Auth in Expo Go
 
-## Join the community
+Expo Go uses an `exp://.../--/auth/callback` redirect instead of the app scheme
+(`miga://auth/callback`). If a magic link or Google OAuth sends the phone to
+`localhost`/`127.0.0.1`, restart Expo with a reachable URL:
 
-Join our community of developers creating universal apps.
+```bash
+npx expo start --tunnel -c
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Then retry login and check the Metro log line `[auth] redirect URL:`. That exact
+URL must match the Supabase allowlist (`exp://**` covers local development).
+For the most stable auth flow, use a development build, where the redirect is
+`miga://auth/callback`.
+
+Quality gates:
+
+```bash
+npm run typecheck   # strict TS
+npm test            # jest: nutrition math, unit normalization, AI schema guards
+npm run lint
+```
+
+## 4. What works where
+
+| Feature | Expo Go | Dev build |
+|---|---|---|
+| Auth, i18n, Today, pantry, recipes, planning | ✅ | ✅ |
+| Camera + barcode scanning, AI photo/receipt flows | ✅ | ✅ |
+| RevenueCat purchases | ❌ (free tier behavior) | ✅ |
+| HealthKit / Health Connect | ❌ (no-op) | ✅ after [activation](docs/health-integrations.md) |
+
+## 5. EAS builds
+
+```bash
+npm i -g eas-cli && eas login
+eas init                                  # writes projectId into app config
+eas build --profile development --platform ios     # dev client (purchases, health)
+eas build --profile preview --platform all         # internal distribution
+eas build --profile production --platform all      # store submission
+eas submit --platform ios
+```
+
+Profiles live in `eas.json` (development / preview / production, remote versioning).
+
+## 6. Project layout
+
+```
+src/app/          Expo Router: (auth), onboarding, (tabs)/{today,scan,inventory,recipes,planning}, profile, ai
+src/components/ui UI kit (Glass, ProgressRing, MacroBar, states…)
+src/features/     per-domain services + hooks (auth, scan, today, recipes, planning, premium, ai…)
+src/lib/          supabase, query, i18n (+locales), ai client, revenuecat, health
+src/stores/       zustand: offline queue, settings, onboarding draft
+src/theme/        design tokens (HIG type scale, light/dark palettes)
+src/types/        domain model + zod schemas for AI responses
+src/utils/        nutrition math, units, dates (+ tests)
+supabase/         migrations (schema/RLS/RPCs), seed.sql, functions/ (Edge + _shared/ai)
+docs/             architecture, privacy, ai-safety, compliance, health
+```
+
+## 7. Conventions
+- Every visible string comes from `src/lib/i18n/locales/{en,es}.json`.
+- No client writes to critical tables — SECURITY DEFINER RPCs only (see RLS doc
+  header in `supabase/migrations/00002_rls.sql`).
+- AI responses must parse against the zod schemas on both server and client.
+- Images from scans are deleted right after processing — keep it that way.
