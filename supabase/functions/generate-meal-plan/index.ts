@@ -1,11 +1,12 @@
-import { getAiProvider, extractJson } from '../_shared/ai/index.ts';
+import { extractJson, getAiProvider } from '../_shared/ai/index.ts';
 import { buildUserContext, SAFETY_RULES } from '../_shared/context.ts';
 import { authorizeAiRequest, recordAiFailure, recordAiResult } from '../_shared/guard.ts';
 import { errorResponse, handleOptions, jsonResponse } from '../_shared/http.ts';
-import { mealPlanDraftSchema } from '../_shared/schemas.ts';
+import { dayPlanSchema } from '../_shared/schemas.ts';
 
 const SYSTEM_PROMPT = `You are a meal planner for the Miga app.
-Create a realistic meal plan matching the user's daily targets, preferences, pantry, skill, time and budget.
+Plan ONE day of meals that HITS the user's calorie and protein targets and respects their
+profile, pantry, saved recipes, cooking skill, time and budget.
 
 Return ONLY a JSON object:
 {
@@ -15,25 +16,24 @@ Return ONLY a JSON object:
       "meal_type": "breakfast" | "lunch" | "dinner" | "snack" | "flexible",
       "title": string,                 // short dish name
       "description": string | null,    // 1-2 sentences: what it is / how to make it quickly
-      "recipe_id": string | null,      // ONLY a real id from the user's recipe list, else null
+      "recipe_id": string | null,      // a real id from the user's recipe list when you use one, else null
       "uses_inventory": string[],      // pantry item names this meal consumes
       "nutrients": { "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number }
     }
-  ],
-  "daily_kcal_estimate": number,
-  "notes": string[]
+  ]
 }
 
-Rules:
-- CRITICAL: return meals for EVERY single date you are given — never fewer days. If you
-  receive 7 dates and the user eats 3 meals/day, return ~21 meal entries (one per meal per day).
-  Do not summarize, do not return just one representative day.
-- Cover each date with the user's meals_per_day structure (breakfast/lunch/dinner + snacks as
-  needed); use "flexible" only for flexible planning style. Vary dishes across the days.
-- Daily totals should land within ±10% of the calorie target and close to the protein target.
-- Prefer pantry items close to expiry; prefer the user's own recipes when they fit (use their exact recipe_id).
-- Respect restrictions and NEVER include allergens.
-- Keep prep time within the user's available cooking time; match budget level.
+Rules (in priority order):
+1. CALORIES: the SUM of every meal's kcal for the day MUST land within ±8% of the day's calorie
+   target. This is the most important rule — distribute the target across the day's meals so the
+   total actually reaches it (do NOT under-shoot). Protein total should be close to its target too.
+2. Return the user's meals-per-day structure for the date (breakfast/lunch/dinner + snacks as
+   needed); use "flexible" only for the flexible planning style.
+3. RECIPES: strongly prefer the user's OWN saved recipes when they fit a slot — set recipe_id to
+   their EXACT id and reuse that recipe's name and per-serving nutrients (scale if needed).
+4. Prefer pantry items close to expiry. Respect restrictions and NEVER include allergens.
+5. Keep prep time within the user's available cooking time; match budget level.
+6. Do NOT repeat dishes already used earlier in the week (a list is provided).
 ${SAFETY_RULES}`;
 
 Deno.serve(async (req) => {
@@ -44,9 +44,8 @@ Deno.serve(async (req) => {
   if (auth instanceof Response) return auth;
 
   const body = await req.json().catch(() => null);
-  const startDate = typeof body?.start_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.start_date)
-    ? body.start_date
-    : null;
+  const startDate =
+    typeof body?.start_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.start_date) ? body.start_date : null;
   const days = Number.isInteger(body?.days) && body.days >= 1 && body.days <= 7 ? body.days : null;
   if (!startDate || !days) return errorResponse('invalid_request');
 
@@ -57,53 +56,76 @@ Deno.serve(async (req) => {
   });
 
   try {
-    const userContext = await buildUserContext(auth.service, auth.user.id, {
-      inventory: true,
-      recipes: true,
-    });
+    const [{ data: goals }, userContext] = await Promise.all([
+      auth.service.from('user_goals').select('kcal, protein_g').eq('user_id', auth.user.id).maybeSingle(),
+      buildUserContext(auth.service, auth.user.id, { inventory: true, recipes: true }),
+    ]);
+    const kcalTarget = goals?.kcal ?? 2000;
+    const proteinTarget = goals?.protein_g ?? 110;
+
     const provider = getAiProvider();
-    const raw = await provider.generate({
-      system: SYSTEM_PROMPT,
-      json: true,
-      temperature: 0.5,
-      // A full week needs room and a little reasoning, or a nano model returns
-      // only the first day. 'low' balances completeness with latency.
-      maxTokens: days > 1 ? 14000 : 4000,
-      reasoningEffort: days > 1 ? 'low' : 'minimal',
-      messages: [
-        {
-          role: 'user',
-          parts: [
+
+    // Generate day by day: each call is a small, focused task (reliable on a
+    // nano model) that must hit the daily target, and we pass the dishes
+    // already chosen so the week stays varied.
+    const allMeals: unknown[] = [];
+    const usedTitles: string[] = [];
+
+    for (const date of dates) {
+      try {
+        const raw = await provider.generate({
+          system: SYSTEM_PROMPT,
+          json: true,
+          temperature: 0.5,
+          maxTokens: 3000,
+          reasoningEffort: 'minimal',
+          messages: [
             {
-              type: 'text',
-              text:
-                `${userContext}\n\nGenerate a meal plan covering ALL of these ${dates.length} dates: ${dates.join(', ')}.\n` +
-                `Return a meal entry for every one of these ${dates.length} dates (do not stop after the first day).`,
+              role: 'user',
+              parts: [
+                {
+                  type: 'text',
+                  text:
+                    `${userContext}\n\nPlan all meals for ${date}.\n` +
+                    `THIS DAY must total ${kcalTarget} kcal (the sum of every meal's kcal within ±8% of ${kcalTarget}) ` +
+                    `and about ${proteinTarget} g protein.\n` +
+                    `Dishes already used this week (do not repeat): ${usedTitles.join(', ') || 'none'}.`,
+                },
+              ],
             },
           ],
-        },
-      ],
-    });
+        });
 
-    const parsed = mealPlanDraftSchema.safeParse(extractJson(raw));
-    if (!parsed.success) {
+        const parsed = dayPlanSchema.safeParse(extractJson(raw));
+        if (!parsed.success) continue;
+
+        // Force the requested date (models occasionally echo the wrong day).
+        const meals = parsed.data.meals.map((meal) => ({ ...meal, date }));
+        allMeals.push(...meals);
+        usedTitles.push(...meals.map((meal) => meal.title));
+      } catch {
+        // Skip a day that failed rather than losing the whole plan.
+        continue;
+      }
+    }
+
+    if (allMeals.length === 0) {
       await recordAiFailure(auth, 'invalid_response');
       return errorResponse('invalid_response');
     }
 
-    // Drop meals outside the requested window (hallucination guard).
-    const valid = {
-      ...parsed.data,
-      meals: parsed.data.meals.filter((meal) => dates.includes(meal.date)),
+    const totalKcal = allMeals.reduce(
+      (sum, meal) => sum + ((meal as { nutrients?: { kcal?: number } }).nutrients?.kcal ?? 0),
+      0,
+    );
+    const result = {
+      meals: allMeals,
+      daily_kcal_estimate: Math.round(totalKcal / dates.length),
+      notes: [] as string[],
     };
-    if (valid.meals.length === 0) {
-      await recordAiFailure(auth, 'invalid_response');
-      return errorResponse('invalid_response');
-    }
 
-    // Draft only — persisted by accept_meal_plan after user confirmation.
-    await recordAiResult(auth, { days, meals: valid.meals.length });
-    return jsonResponse(valid);
+    await recordAiResult(auth, { days, meals: allMeals.length });
+    return jsonResponse(result);
   } catch (error) {
     await recordAiFailure(auth, 'provider_error');
     return errorResponse('provider_error', error instanceof Error ? error.message : 'unknown');

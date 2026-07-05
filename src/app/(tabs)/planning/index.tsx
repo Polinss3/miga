@@ -14,6 +14,7 @@ import {
   Icon,
   LoadingState,
   Screen,
+  type IconName,
 } from '@/components/ui';
 import {
   generatePlanDraft,
@@ -313,25 +314,11 @@ function PlanItemCard({
   const theme = useTheme();
 
   return (
-    <Card onPress={onOpen} style={{ gap: theme.spacing.xs, opacity: item.completed ? 0.6 : 1 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <AppText variant="footnote" color="tertiary">
-          {t(`today.${item.meal_type === 'flexible' ? 'flexibleMeal' : item.meal_type}`)}
-          {item.locked ? ` · ${t('planning.locked')}` : ''}
-        </AppText>
-        <View style={{ flexDirection: 'row', gap: theme.spacing.lg }}>
-          <Pressable onPress={onToggleLock} hitSlop={8} accessibilityRole="button">
-            <Icon name="lock" size={16} color={item.locked ? theme.colors.accent : theme.colors.textTertiary} />
-          </Pressable>
-          <Pressable onPress={onToggleDone} hitSlop={8} accessibilityRole="button">
-            <Icon name="check" size={16} color={item.completed ? theme.colors.success : theme.colors.textTertiary} />
-          </Pressable>
-        </View>
-      </View>
-      <AppText
-        variant="headline"
-        style={item.completed ? { textDecorationLine: 'line-through' } : undefined}
-      >
+    <Card onPress={onOpen} style={{ gap: theme.spacing.sm, opacity: item.completed ? 0.6 : 1 }}>
+      <AppText variant="footnote" color="tertiary">
+        {t(`today.${item.meal_type === 'flexible' ? 'flexibleMeal' : item.meal_type}`)}
+      </AppText>
+      <AppText variant="headline" style={item.completed ? { textDecorationLine: 'line-through' } : undefined}>
         {item.title}
       </AppText>
       {item.description ? (
@@ -344,6 +331,65 @@ function PlanItemCard({
           {Math.round(item.nutrients.kcal)} {t('common.kcal')} · P {Math.round(item.nutrients.protein_g)}g
         </AppText>
       ) : null}
+
+      {/* Prominent, tappable actions */}
+      <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.xs }}>
+        <PlanActionPill
+          icon="check"
+          label={item.completed ? t('planning.completed') : t('planning.markCompleted')}
+          active={item.completed}
+          activeColor={theme.colors.success}
+          onPress={onToggleDone}
+        />
+        <PlanActionPill
+          icon="lock"
+          label={item.locked ? t('planning.locked') : t('planning.lock')}
+          active={item.locked}
+          activeColor={theme.colors.accent}
+          onPress={onToggleLock}
+        />
+      </View>
     </Card>
+  );
+}
+
+function PlanActionPill({
+  icon,
+  label,
+  active,
+  activeColor,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  active: boolean;
+  activeColor: string;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      style={({ pressed }) => ({
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: theme.spacing.sm,
+        paddingVertical: theme.spacing.md,
+        borderRadius: theme.radius.md,
+        backgroundColor: active ? `${activeColor}22` : theme.colors.surfaceMuted,
+        borderWidth: 1,
+        borderColor: active ? activeColor : theme.colors.border,
+        opacity: pressed ? 0.7 : 1,
+      })}
+    >
+      <Icon name={icon} size={16} color={active ? activeColor : theme.colors.textSecondary} />
+      <AppText variant="subhead" style={{ color: active ? activeColor : theme.colors.textSecondary, fontWeight: '600' }}>
+        {label}
+      </AppText>
+    </Pressable>
   );
 }

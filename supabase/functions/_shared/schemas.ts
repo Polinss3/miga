@@ -86,21 +86,23 @@ export const recipeDraftSchema = z.object({
   change_summary: z.string().max(600).nullish(),
 });
 
+export const planMealSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  meal_type: z.enum(['breakfast', 'lunch', 'dinner', 'snack', 'flexible']),
+  title: z.string().min(1).max(140),
+  description: z.string().max(400).nullish(),
+  recipe_id: z.string().uuid().nullish(),
+  uses_inventory: z.array(z.string().max(120)).default([]),
+  nutrients: nutrientsSchema,
+});
+
+/** One day's worth of meals — the meal plan is generated day by day. */
+export const dayPlanSchema = z.object({
+  meals: z.array(planMealSchema).min(1).max(8),
+});
+
 export const mealPlanDraftSchema = z.object({
-  meals: z
-    .array(
-      z.object({
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-        meal_type: z.enum(['breakfast', 'lunch', 'dinner', 'snack', 'flexible']),
-        title: z.string().min(1).max(140),
-        description: z.string().max(400).nullish(),
-        recipe_id: z.string().uuid().nullish(),
-        uses_inventory: z.array(z.string().max(120)).default([]),
-        nutrients: nutrientsSchema,
-      }),
-    )
-    .min(1)
-    .max(60),
+  meals: z.array(planMealSchema).min(1).max(60),
   daily_kcal_estimate: z.number().min(0).max(8000),
   notes: z.array(z.string().max(300)).default([]),
 });
