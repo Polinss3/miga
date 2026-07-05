@@ -392,6 +392,7 @@
     "day": "Day",
     "generateDay": "Generate day with AI",
     "generateWeek": "Generate week with AI",
+    "generateWeekHint": "Generates the week of the selected day ({{range}}). Pick a day in next week to plan it.",
     "regenerate": "Regenerate",
     "locked": "Locked",
     "lock": "Lock",

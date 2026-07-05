@@ -28,7 +28,7 @@ import { AiError } from '@/lib/ai/client';
 import { useTheme } from '@/theme';
 import type { MealPlanDraft } from '@/types/ai';
 import type { MealPlanItem } from '@/types/domain';
-import { dayKey, twoWeekDays } from '@/utils/dates';
+import { dayKey, mondayOf, twoWeekDays } from '@/utils/dates';
 
 export default function PlanningScreen() {
   const { t } = useTranslation();
@@ -53,6 +53,17 @@ export default function PlanningScreen() {
 
   const allItems = useMemo(() => [...(plan?.items ?? []), ...(nextPlan?.items ?? [])], [plan, nextPlan]);
 
+  // "Generate week" targets the week the selected day belongs to, so you can
+  // plan next week (e.g. from a Sunday) just by picking a day in it.
+  const selectedWeekStart = useMemo(() => mondayOf(selectedDay), [selectedDay]);
+  const selectedWeekLabel = useMemo(() => {
+    const start = new Date(`${selectedWeekStart}T12:00:00`);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    const fmt = (d: Date) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return `${fmt(start)} – ${fmt(end)}`;
+  }, [selectedWeekStart]);
+
   const dayItems = allItems
     .filter((item) => item.date === selectedDay)
     .sort((a, b) => mealOrder(a) - mealOrder(b));
@@ -65,7 +76,7 @@ export default function PlanningScreen() {
     setGenerating(true);
     try {
       const result = await generatePlanDraft({
-        startDate: scope === 'day' ? selectedDay : weekStart,
+        startDate: scope === 'day' ? selectedDay : selectedWeekStart,
         days: scope === 'day' ? 1 : 7,
       });
       setDraft(result);
@@ -225,6 +236,9 @@ export default function PlanningScreen() {
 
       <Button label={t('planning.generateDay')} icon="sparkles" variant="secondary" onPress={() => void generate('day')} />
       <Button label={t('planning.generateWeek')} icon="sparkles" onPress={() => void generate('week')} />
+      <AppText variant="footnote" color="tertiary" style={{ textAlign: 'center' }}>
+        {t('planning.generateWeekHint', { range: selectedWeekLabel })}
+      </AppText>
       <AppText variant="footnote" color="tertiary" style={{ textAlign: 'center' }}>
         {t('planning.premiumNote')}
       </AppText>
