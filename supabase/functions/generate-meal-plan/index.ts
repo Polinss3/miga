@@ -24,9 +24,10 @@ Return ONLY a JSON object:
 }
 
 Rules (in priority order):
-1. CALORIES: the SUM of every meal's kcal for the day MUST land within ±8% of the day's calorie
-   target. This is the most important rule — distribute the target across the day's meals so the
-   total actually reaches it (do NOT under-shoot). Protein total should be close to its target too.
+1. CALORIES (most important): FIRST decide a kcal budget for each meal so the budgets SUM to the
+   day's calorie target, THEN fill each meal to its budget and compute its nutrients. The sum of
+   every meal's kcal MUST land within the stated tolerance of the target — never under-shoot.
+   Add or enlarge meals/snacks as needed to reach the target. Protein total should be close too.
 2. Return the user's meals-per-day structure for the date (breakfast/lunch/dinner + snacks as
    needed); use "flexible" only for the flexible planning style.
 3. RECIPES: strongly prefer the user's OWN saved recipes when they fit a slot — set recipe_id to
@@ -65,48 +66,75 @@ Deno.serve(async (req) => {
 
     const provider = getAiProvider();
 
-    // Generate day by day: each call is a small, focused task (reliable on a
-    // nano model) that must hit the daily target, and we pass the dishes
-    // already chosen so the week stays varied.
-    const allMeals: unknown[] = [];
-    const usedTitles: string[] = [];
+    // The nano model can't reliably sum its own kcal, so we VERIFY the total
+    // server-side and, when it's off by more than the tolerance, retry the day
+    // with concrete feedback ("you hit 2600, target 3300, add ~700"). We keep
+    // the closest attempt if none land inside the tolerance.
+    const TOLERANCE = 200;
+    // Bound total latency under the client's ~60s request timeout: a single
+    // day can afford more retries than a whole week (7 days × attempts).
+    const maxAttempts = days === 1 ? 4 : 2;
+    type Meal = { date: string; title: string; nutrients?: { kcal?: number } };
 
-    for (const date of dates) {
-      try {
-        const raw = await provider.generate({
-          system: SYSTEM_PROMPT,
-          json: true,
-          temperature: 0.5,
-          maxTokens: 3000,
-          reasoningEffort: 'minimal',
-          messages: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  type: 'text',
-                  text:
-                    `${userContext}\n\nPlan all meals for ${date}.\n` +
-                    `THIS DAY must total ${kcalTarget} kcal (the sum of every meal's kcal within ±8% of ${kcalTarget}) ` +
-                    `and about ${proteinTarget} g protein.\n` +
-                    `Dishes already used this week (do not repeat): ${usedTitles.join(', ') || 'none'}.`,
-                },
-              ],
-            },
-          ],
-        });
+    const planDay = async (date: string, usedTitles: string[]): Promise<Meal[] | null> => {
+      let best: { meals: Meal[]; diff: number } | null = null;
+      let feedback = '';
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          const raw = await provider.generate({
+            system: SYSTEM_PROMPT,
+            json: true,
+            temperature: 0.4,
+            maxTokens: 3000,
+            reasoningEffort: 'minimal',
+            messages: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    type: 'text',
+                    text:
+                      `${userContext}\n\nPlan all meals for ${date}.\n` +
+                      `THIS DAY must total ${kcalTarget} kcal — the sum of every meal's kcal must be ` +
+                      `within ±${TOLERANCE} kcal of ${kcalTarget} (i.e. between ${kcalTarget - TOLERANCE} and ` +
+                      `${kcalTarget + TOLERANCE}) — and about ${proteinTarget} g protein.\n` +
+                      `Dishes already used this week (do not repeat): ${usedTitles.join(', ') || 'none'}.` +
+                      feedback,
+                  },
+                ],
+              },
+            ],
+          });
 
-        const parsed = dayPlanSchema.safeParse(extractJson(raw));
-        if (!parsed.success) continue;
+          const parsed = dayPlanSchema.safeParse(extractJson(raw));
+          if (!parsed.success) continue;
 
-        // Force the requested date (models occasionally echo the wrong day).
-        const meals = parsed.data.meals.map((meal) => ({ ...meal, date }));
-        allMeals.push(...meals);
-        usedTitles.push(...meals.map((meal) => meal.title));
-      } catch {
-        // Skip a day that failed rather than losing the whole plan.
-        continue;
+          // Force the requested date (models occasionally echo the wrong day).
+          const meals = parsed.data.meals.map((meal) => ({ ...meal, date })) as Meal[];
+          const total = meals.reduce((sum, meal) => sum + (meal.nutrients?.kcal ?? 0), 0);
+          const diff = total - kcalTarget;
+          if (!best || Math.abs(diff) < Math.abs(best.diff)) best = { meals, diff };
+          if (Math.abs(diff) <= TOLERANCE) return meals;
+
+          feedback =
+            `\n\nYour previous plan for this day totaled ${Math.round(total)} kcal, which is ` +
+            `${diff > 0 ? 'OVER' : 'UNDER'} the ${kcalTarget} target by ${Math.abs(Math.round(diff))} kcal. ` +
+            `${diff > 0 ? 'Reduce portion sizes' : 'Increase portion sizes or add a snack'} and recompute each ` +
+            `meal's nutrients so the day totals ${kcalTarget} kcal (±${TOLERANCE}).`;
+        } catch {
+          continue;
+        }
       }
+      return best?.meals ?? null;
+    };
+
+    const allMeals: Meal[] = [];
+    const usedTitles: string[] = [];
+    for (const date of dates) {
+      const meals = await planDay(date, usedTitles);
+      if (!meals) continue;
+      allMeals.push(...meals);
+      usedTitles.push(...meals.map((meal) => meal.title));
     }
 
     if (allMeals.length === 0) {
@@ -115,7 +143,7 @@ Deno.serve(async (req) => {
     }
 
     const totalKcal = allMeals.reduce(
-      (sum, meal) => sum + ((meal as { nutrients?: { kcal?: number } }).nutrients?.kcal ?? 0),
+      (sum, meal) => sum + (meal.nutrients?.kcal ?? 0),
       0,
     );
     const result = {
